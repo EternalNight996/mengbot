@@ -1,0 +1,87 @@
+name: Publish v0.1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without v"
+        required: true
+        default: "0.1.0"
+      tag:
+        description: "Release tag"
+        required: true
+        default: "v0.1.0"
+      target:
+        description: "Commit SHA for the tag"
+        required: true
+        default: "c667e2c9a37c78477c8f67bb1b7c099000f2bf69"
+      linux_artifact_id:
+        description: "Actions artifact id for Linux"
+        required: true
+        default: "14633927784"
+      mac_artifact_id:
+        description: "Actions artifact id for macOS"
+        required: true
+        default: "14625562510"
+      draft:
+        description: "Create as draft"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    name: Assemble the public release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target }}
+          persist-credentials: false
+
+      - name: Download the verified CI artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p incoming/linux incoming/mac release-assets
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/${{ inputs.linux_artifact_id }}/zip" > incoming/linux.zip
+          unzip -q incoming/linux.zip -d incoming/linux
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/${{ inputs.mac_artifact_id }}/zip" > incoming/mac.zip
+          unzip -q incoming/mac.zip -d incoming/mac
+          find incoming -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Collect only release assets
+        run: |
+          set -euo pipefail
+          find incoming/linux -maxdepth 2 -name '*.deb' -exec cp {} release-assets/ \;
+          find incoming/linux -maxdepth 2 -name '*.AppImage' -exec cp {} release-assets/ \;
+          if [ -f incoming/linux/latest-linux.yml ]; then cp incoming/linux/latest-linux.yml release-assets/; fi
+          find incoming/mac -maxdepth 3 -name '*.zip' -exec cp {} release-assets/ \;
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -ge 3
+          (cd release-assets && sha256sum * > SHA256SUMS-linux-macos.txt)
+          ls -lh release-assets
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'EOF'
+          MengBot 0.1.0
+
+          - Windows x64 portable: uploaded separately (222,671,599 bytes).
+          - Linux x64: DEB + AppImage, built and verified on Ubuntu 24.04.
+          - macOS: unsigned arm64 + x64 zip. Gatekeeper will warn until notarized.
+          - iOS / Android: temporary mobile packages are not part of this desktop release.
+
+          SHA-256 checksums for the Linux and macOS assets are in SHA256SUMS-linux-macos.txt.
+          EOF
+          draft_flag=""
+          if [ "${{ inputs.draft }}" = "true" ]; then draft_flag="--draft"; fi
+          gh release create "${{ inputs.tag }}" release-assets/*             --repo "$GITHUB_REPOSITORY"             --target "${{ inputs.target }}"             --title "MengBot ${{ inputs.version }}"             --notes-file release-notes.md             --latest=false $draft_flag

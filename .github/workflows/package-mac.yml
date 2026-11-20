@@ -1,0 +1,47 @@
+name: Package macOS
+
+on:
+  push:
+    branches: [release/v0.1.0]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit/tag/branch to build"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: macOS unsigned zip (arm64 + x64)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Ensure Electron binary
+        run: node node_modules/electron/install.js
+      - name: Prepare desktop payloads
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: pnpm package:prepare
+      - name: Build unsigned macOS zip
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: pnpm exec electron-builder --mac zip --x64 --arm64 --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-release
+          path: release/*.zip
+          if-no-files-found: error
+# resync
